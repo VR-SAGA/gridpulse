@@ -1,0 +1,26 @@
+# Terraform
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfplan
+plan.txt
+.build/
+*.tfvars
+!example.tfvars
+
+# Node / Worker
+node_modules/
+dist/
+.wrangler/
+.dev.vars
+
+# Go
+app/gridpulse-api
+
+# k6
+summary.json
+
+# OS / editors
+.DS_Store
+.idea/
+.vscode/

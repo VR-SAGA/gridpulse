@@ -1,0 +1,57 @@
+{
+  "$comment": "Single source of truth for SLOs. Read by the Cloudflare Worker (edge view) and by Terraform (Cloud Monitoring SLOs and burn-rate alerts).",
+  "targets": [
+    {
+      "id": "api",
+      "name": "GridPulse API (Cloud Run)",
+      "url_from_env": "API_URL",
+      "path": "/api/tariff",
+      "timeout_ms": 5000,
+      "on_gcp": true
+    },
+    {
+      "id": "carbon",
+      "name": "UK Carbon Intensity API",
+      "url": "https://api.carbonintensity.org.uk",
+      "path": "/intensity",
+      "timeout_ms": 5000,
+      "on_gcp": false
+    }
+  ],
+  "slos": [
+    {
+      "id": "api-availability",
+      "target": "api",
+      "type": "availability",
+      "objective": 0.995,
+      "window_days": 28,
+      "description": "99.5% of tariff requests return a non-5xx response"
+    },
+    {
+      "id": "api-latency",
+      "target": "api",
+      "type": "latency",
+      "threshold_ms": 800,
+      "objective": 0.99,
+      "window_days": 28,
+      "description": "99% of tariff requests complete in under 800 ms"
+    },
+    {
+      "id": "carbon-availability",
+      "target": "carbon",
+      "type": "availability",
+      "objective": 0.99,
+      "window_days": 28,
+      "description": "Upstream dependency: 99% of probes to the UK Carbon Intensity API succeed"
+    }
+  ],
+  "alerting": {
+    "$comment": "Multi-window, multi-burn-rate rules from the Google SRE Workbook, chapter 5. An alert fires only when BOTH windows exceed the burn rate.",
+    "min_events_long_window": 10,
+    "rules": [
+      { "name": "fast-burn",   "severity": "page",   "long": "1h", "short": "5m",  "burn_rate": 14.4, "budget_spent": "2% in 1 hour" },
+      { "name": "medium-burn", "severity": "page",   "long": "6h", "short": "30m", "burn_rate": 6,    "budget_spent": "5% in 6 hours" },
+      { "name": "slow-burn",   "severity": "ticket", "long": "3d", "short": "6h",  "burn_rate": 1,    "budget_spent": "10% in 3 days" }
+    ]
+  }
+}

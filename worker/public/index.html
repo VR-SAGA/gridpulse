@@ -1,0 +1,192 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>GridPulse status</title>
+<meta name="description" content="Live SLOs, error budgets and burn-rate alerts for the GridPulse API, measured from Cloudflare's edge.">
+<style>
+  :root {
+    --bg: #f6f7f4; --panel: #ffffff; --ink: #17201b; --muted: #5d6a62; --line: #dde3dd;
+    --good: #1f8a4c; --good-bg: #e3f4e9; --warn: #a76a00; --warn-bg: #fdf1d8;
+    --bad: #c0362c; --bad-bg: #fbe5e2; --accent: #2457c5; --bar: #e8ece8;
+    --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0f1412; --panel: #171e1b; --ink: #e8eee9; --muted: #98a59d; --line: #29332e;
+      --good: #4cc584; --good-bg: #173325; --warn: #e9b44c; --warn-bg: #3a2e14;
+      --bad: #f07267; --bad-bg: #3d1d1a; --accent: #7aa2ff; --bar: #26302b;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink);
+    font: 15px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  main { max-width: 1080px; margin: 0 auto; padding: 32px 16px 64px; }
+  header { display: flex; flex-wrap: wrap; gap: 16px; align-items: flex-end; justify-content: space-between; margin-bottom: 24px; }
+  h1 { font-size: 28px; margin: 0; letter-spacing: -0.02em; }
+  h1 span { color: var(--muted); font-weight: 400; }
+  h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); margin: 32px 0 12px; }
+  .sub { color: var(--muted); margin: 4px 0 0; }
+  .banner { border-radius: 12px; padding: 16px 20px; font-weight: 600; display: flex; gap: 12px; align-items: center; }
+  .banner.ok { background: var(--good-bg); color: var(--good); }
+  .banner.page { background: var(--bad-bg); color: var(--bad); }
+  .banner.ticket { background: var(--warn-bg); color: var(--warn); }
+  .dot { width: 10px; height: 10px; border-radius: 50%; background: currentColor; flex: none; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 16px; }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 20px; }
+  .card h3 { margin: 0 0 2px; font-size: 16px; font-family: var(--mono); }
+  .card p { margin: 0 0 16px; color: var(--muted); font-size: 13px; }
+  .stats { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 16px; }
+  .stat b { display: block; font-size: 22px; font-variant-numeric: tabular-nums; }
+  .stat span { color: var(--muted); font-size: 12px; }
+  .meter { height: 8px; background: var(--bar); border-radius: 4px; overflow: hidden; margin: 4px 0 16px; }
+  .meter i { display: block; height: 100%; border-radius: 4px; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; font-variant-numeric: tabular-nums; }
+  th, td { text-align: left; padding: 6px 0; border-top: 1px solid var(--line); }
+  th { color: var(--muted); font-weight: 500; }
+  td.num, th.num { text-align: right; }
+  .hot { color: var(--bad); font-weight: 600; }
+  .pill { display: inline-block; padding: 2px 8px; border-radius: 99px; font-size: 12px; font-weight: 600; }
+  .pill.ok { background: var(--good-bg); color: var(--good); }
+  .pill.page { background: var(--bad-bg); color: var(--bad); }
+  .pill.ticket { background: var(--warn-bg); color: var(--warn); }
+  a { color: var(--accent); }
+  .strip { display: flex; gap: 2px; height: 56px; align-items: flex-end; margin: 12px 0 8px; }
+  .strip i { flex: 1; background: var(--bar); border-radius: 2px 2px 0 0; min-height: 3px; }
+  .strip i.best { background: var(--good); }
+  .muted { color: var(--muted); font-size: 13px; }
+  footer { margin-top: 40px; color: var(--muted); font-size: 13px; }
+  .empty { color: var(--muted); padding: 12px 0; }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <div>
+      <h1>GridPulse <span>status</span></h1>
+      <p class="sub">SLOs and error budgets for a GCP Cloud Run API, measured every minute from Cloudflare's edge.</p>
+    </div>
+    <div class="muted" id="updated">Loading…</div>
+  </header>
+
+  <div id="banner" class="banner ok"><span class="dot"></span><span>Loading status…</span></div>
+
+  <h2>Service level objectives</h2>
+  <div class="grid" id="slos"></div>
+
+  <h2>Open incidents</h2>
+  <div class="card" id="incidents"></div>
+
+  <h2>Latest probes</h2>
+  <div class="card"><table id="probes"><thead><tr><th>Target</th><th class="num">Status</th><th class="num">Latency</th><th class="num">Checked</th></tr></thead><tbody></tbody></table></div>
+
+  <h2>Carbon-aware scheduling</h2>
+  <div class="card" id="carbon"><div class="empty">Loading GB grid forecast…</div></div>
+
+  <footer>
+    Multi-window burn-rate alerting from the Google SRE Workbook. Incidents open automatically as GitHub issues.
+    Source, architecture and postmortems: <a id="repo" href="https://github.com/VR-SAGA/gridpulse">github.com/VR-SAGA/gridpulse</a>.
+    Metrics for Prometheus/Grafana at <a href="/metrics">/metrics</a>.
+  </footer>
+</main>
+
+<script>
+const pct = (x, d = 3) => x === null || x === undefined ? "n/a" : (x * 100).toFixed(d) + "%";
+const ago = (ts) => {
+  const s = Math.max(0, Math.round(Date.now() / 1000 - ts));
+  return s < 90 ? s + "s ago" : Math.round(s / 60) + " min ago";
+};
+const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
+
+function budgetColor(b) {
+  if (b < 0.25) return "var(--bad)";
+  if (b < 0.6) return "var(--warn)";
+  return "var(--good)";
+}
+
+function renderSlo(s, rules) {
+  const thresholds = Object.fromEntries(rules.flatMap((r) => [[r.long, r.burn_rate], [r.short, r.burn_rate]]));
+  const remaining = Math.max(0, Math.min(1, s.budget_remaining));
+  const state = s.firing ? s.firing.severity : "ok";
+  const label = s.firing ? `${s.firing.rule}` : "healthy";
+  const rows = Object.entries(s.burn_rates).map(([w, v]) => {
+    const hot = thresholds[w] !== undefined && v > thresholds[w];
+    return `<tr><td>${w}</td><td class="num ${hot ? "hot" : ""}">${v.toFixed(2)}x</td></tr>`;
+  }).join("");
+  return `<div class="card">
+    <h3>${esc(s.id)} <span class="pill ${state}">${esc(label)}</span></h3>
+    <p>${esc(s.description)}</p>
+    <div class="stats">
+      <div class="stat"><b>${pct(s.objective, 1)}</b><span>objective, ${s.window_days} days</span></div>
+      <div class="stat"><b>${pct(s.sli)}</b><span>SLI (${s.events.toLocaleString()} events)</span></div>
+    </div>
+    <div class="muted">Error budget remaining: <b>${pct(s.budget_remaining, 1)}</b></div>
+    <div class="meter"><i style="width:${remaining * 100}%;background:${budgetColor(s.budget_remaining)}"></i></div>
+    <table><thead><tr><th>Window</th><th class="num">Burn rate</th></tr></thead><tbody>${rows}</tbody></table>
+  </div>`;
+}
+
+async function loadStatus() {
+  const res = await fetch("/api/status");
+  const data = await res.json();
+  document.getElementById("updated").textContent = "Updated " + new Date(data.generated_at).toLocaleTimeString();
+  const repo = data.repo;
+
+  const firing = data.slos.filter((s) => s.firing);
+  const worst = firing.find((s) => s.firing.severity === "page") || firing[0];
+  const banner = document.getElementById("banner");
+  banner.className = "banner " + (worst ? worst.firing.severity : "ok");
+  banner.lastElementChild.textContent = worst
+    ? `${firing.length} SLO${firing.length > 1 ? "s" : ""} burning error budget: ${firing.map((s) => s.id).join(", ")}`
+    : data.slos.length ? "All SLOs within budget" : "Waiting for the first evaluation (runs every 5 minutes)";
+
+  document.getElementById("slos").innerHTML = data.slos.length
+    ? data.slos.map((s) => renderSlo(s, data.rules)).join("")
+    : `<div class="card empty">No data yet.</div>`;
+
+  const names = Object.fromEntries(data.targets.map((t) => [t.id, t.name]));
+  document.querySelector("#probes tbody").innerHTML = data.probes.map((p) => `<tr>
+      <td>${esc(names[p.target] || p.target)}</td>
+      <td class="num"><span class="pill ${p.ok ? "ok" : "page"}">${p.status || "error"}</span></td>
+      <td class="num">${p.latency_ms} ms</td>
+      <td class="num">${ago(p.ts)}</td></tr>`).join("") || `<tr><td colspan="4" class="empty">No probes yet.</td></tr>`;
+
+  document.getElementById("incidents").innerHTML = data.incidents.length
+    ? `<table><thead><tr><th>SLO</th><th>Rule</th><th>Opened</th><th class="num">Issue</th></tr></thead><tbody>${
+        data.incidents.map((i) => `<tr><td>${esc(i.slo_id)}</td><td><span class="pill ${esc(i.severity)}">${esc(i.rule)}</span></td>
+          <td>${ago(i.opened_ts)}</td><td class="num">${i.issue_number
+            ? `<a href="https://github.com/${repo}/issues/${i.issue_number}">#${i.issue_number}</a>` : "–"}</td></tr>`).join("")
+      }</tbody></table>`
+    : `<div class="empty">None. <a href="https://github.com/${repo}/issues?q=label%3Aincident">Incident history</a></div>`;
+}
+
+async function loadCarbon() {
+  const el = document.getElementById("carbon");
+  try {
+    const data = await (await fetch("/api/carbon")).json();
+    if (!data.forecast) throw new Error(data.error || "no data");
+    const max = Math.max(...data.forecast.map((s) => s.intensity));
+    const best = data.greenest_2h;
+    const bars = data.forecast.map((s) => {
+      const inBest = best && s.from >= best.from && s.to <= best.to;
+      return `<i class="${inBest ? "best" : ""}" title="${new Date(s.from).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}: ${s.intensity} gCO2/kWh" style="height:${(s.intensity / max) * 100}%"></i>`;
+    }).join("");
+    const t = (iso) => new Date(iso).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+    el.innerHTML = `<div class="stats">
+        <div class="stat"><b>${data.now ? data.now.intensity : "n/a"}</b><span>gCO2/kWh now on the GB grid (${esc(data.now?.index || "")})</span></div>
+        <div class="stat"><b>${best ? t(best.from) + "–" + t(best.to) : "n/a"}</b><span>greenest 2 h for batch jobs (avg ${best?.avg_intensity ?? "n/a"})</span></div>
+      </div>
+      <div class="strip">${bars}</div>
+      <div class="muted">Next 24 hours, half-hourly forecast. Source: ${esc(data.source)}. Shifting flexible work into low-carbon windows cuts emissions at no extra cost.</div>`;
+  } catch (e) {
+    el.innerHTML = `<div class="empty">Forecast unavailable right now.</div>`;
+  }
+}
+
+loadStatus().catch(() => { document.getElementById("updated").textContent = "Status API unreachable"; });
+loadCarbon();
+setInterval(() => loadStatus().catch(() => {}), 60000);
+</script>
+</body>
+</html>
