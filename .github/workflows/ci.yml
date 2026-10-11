@@ -1,0 +1,112 @@
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  api:
+    name: Go API
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: app
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: app/go.mod
+      - run: test -z "$(gofmt -l .)" || (gofmt -l . && exit 1)
+      - run: go vet ./...
+      - run: go test -race -cover ./...
+      - name: Build container
+        run: docker build -t gridpulse-api:ci .
+
+  worker:
+    name: Cloudflare Worker
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: worker
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: worker/package-lock.json
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+      - name: Bundle (dry run)
+        run: npx wrangler deploy --dry-run --outdir dist
+
+  terraform:
+    name: Terraform fmt and validate
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        stack: [foundation, service]
+    defaults:
+      run:
+        working-directory: infra/gcp/${{ matrix.stack }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: hashicorp/setup-terraform@v3
+      - run: terraform fmt -check -recursive
+      - run: terraform init -backend=false -input=false
+      - run: terraform validate
+
+  plan:
+    name: Terraform plan (service)
+    if: github.event_name == 'pull_request' && vars.GCP_WORKLOAD_IDENTITY_PROVIDER != ''
+    needs: terraform
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+      pull-requests: write
+    defaults:
+      run:
+        working-directory: infra/gcp/service
+    steps:
+      - uses: actions/checkout@v5
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_DEPLOYER_SA }}
+      - uses: google-github-actions/setup-gcloud@v2
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_wrapper: false
+      - run: terraform init -input=false -backend-config="bucket=${{ vars.TF_STATE_BUCKET }}"
+      - name: Plan
+        id: plan
+        run: |
+          # Plan against the image that is running now, so the diff only
+          # shows infrastructure changes from this PR.
+          image=$(gcloud run services describe gridpulse-api --region us-central1 \
+            --format='value(spec.template.spec.containers[0].image)' 2>/dev/null \
+            || echo us-docker.pkg.dev/cloudrun/container/hello)
+          terraform plan -input=false -no-color -lock=false \
+            -var "project_id=${{ vars.GCP_PROJECT_ID }}" \
+            -var "alert_email=${{ vars.ALERT_EMAIL }}" \
+            -var "image=${image}" \
+            > plan.txt 2>&1 || (cat plan.txt && exit 1)
+          tail -n 60 plan.txt
+      - name: Comment plan on PR
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const plan = fs.readFileSync('infra/gcp/service/plan.txt', 'utf8');
+            const body = `#### Terraform plan: service stack\n<details><summary>Show plan</summary>\n\n\`\`\`\n${plan.slice(-60000)}\n\`\`\`\n</details>`;
+            await github.rest.issues.createComment({ ...context.repo, issue_number: context.issue.number, body });

@@ -1,0 +1,76 @@
+name: deploy-gcp
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - app/**
+      - infra/gcp/service/**
+      - config/**
+      - .github/workflows/deploy-gcp.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write # GitHub OIDC token, exchanged for short-lived GCP credentials
+
+concurrency:
+  group: deploy-gcp
+  cancel-in-progress: false # never interrupt a running terraform apply
+
+env:
+  REGION: us-central1
+  IMAGE_REPO: us-central1-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/gridpulse/gridpulse-api
+
+jobs:
+  deploy:
+    # Skips until scripts/bootstrap-gcp.sh has run and the variables are set.
+    if: vars.GCP_WORKLOAD_IDENTITY_PROVIDER != ''
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Authenticate to GCP (Workload Identity Federation, no keys)
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_DEPLOYER_SA }}
+
+      - uses: google-github-actions/setup-gcloud@v2
+
+      - name: Build and push image
+        id: image
+        working-directory: app
+        run: |
+          gcloud auth configure-docker "${REGION}-docker.pkg.dev" --quiet
+          docker build -t "${IMAGE_REPO}:${GITHUB_SHA}" .
+          docker push "${IMAGE_REPO}:${GITHUB_SHA}"
+          digest=$(docker inspect --format='{{index .RepoDigests 0}}' "${IMAGE_REPO}:${GITHUB_SHA}")
+          echo "ref=${digest}" >> "$GITHUB_OUTPUT"
+
+      - uses: hashicorp/setup-terraform@v3
+
+      - name: Terraform apply
+        working-directory: infra/gcp/service
+        run: |
+          terraform init -input=false -backend-config="bucket=${{ vars.TF_STATE_BUCKET }}"
+          terraform apply -input=false -auto-approve \
+            -var "project_id=${{ vars.GCP_PROJECT_ID }}" \
+            -var "alert_email=${{ vars.ALERT_EMAIL }}" \
+            -var "image=${{ steps.image.outputs.ref }}"
+
+      - name: Smoke test
+        working-directory: infra/gcp/service
+        run: |
+          url=$(terraform output -raw api_url)
+          for i in 1 2 3 4 5; do
+            code=$(curl -s -o /dev/null -w '%{http_code}' "${url}/healthz") && [ "$code" = 200 ] && break
+            sleep 5
+          done
+          [ "$code" = 200 ] || { echo "healthz returned $code"; exit 1; }
+          {
+            echo "### Deployed"
+            echo "- URL: ${url}"
+            echo "- Image: \`${{ steps.image.outputs.ref }}\`"
+          } >> "$GITHUB_STEP_SUMMARY"

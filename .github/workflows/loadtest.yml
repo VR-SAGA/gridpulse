@@ -1,0 +1,54 @@
+name: loadtest
+
+# Short, capped k6 run to find the saturation point. Cloud Run is limited to
+# 2 instances, so this measures behaviour at the ceiling without running up
+# a bill. Defaults stay far inside the 2M requests/month Free Tier.
+
+on:
+  workflow_dispatch:
+    inputs:
+      peak_vus:
+        description: "Peak virtual users (max 50)"
+        default: "20"
+        required: true
+      duration:
+        description: "Time at peak, e.g. 2m (max 5m)"
+        default: "2m"
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  k6:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+      - name: Validate inputs
+        run: |
+          [ "${{ inputs.peak_vus }}" -le 50 ] || { echo "peak_vus capped at 50"; exit 1; }
+          [[ "${{ inputs.duration }}" =~ ^[1-5]m$ ]] || { echo "duration must be 1m..5m"; exit 1; }
+      - uses: grafana/setup-k6-action@v1
+      - name: Run k6
+        env:
+          BASE_URL: ${{ vars.API_URL }}
+          PEAK_VUS: ${{ inputs.peak_vus }}
+          PEAK_DURATION: ${{ inputs.duration }}
+        run: k6 run --summary-export=summary.json loadtest/tariff.js
+      - name: Summary
+        if: always()
+        run: |
+          [ -f summary.json ] || exit 0
+          jq -r '"### k6 results",
+            "| metric | value |", "|---|---|",
+            "| requests | \(.metrics.http_reqs.count) |",
+            "| req/s | \(.metrics.http_reqs.rate | floor) |",
+            "| p95 latency | \(.metrics.http_req_duration["p(95)"] | floor) ms |",
+            "| p99 latency | \(.metrics.http_req_duration["p(99)"] // 0 | floor) ms |",
+            "| error rate | \((.metrics.http_req_failed.value * 10000 | floor) / 100)% |"' summary.json >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: k6-summary
+          path: summary.json

@@ -1,0 +1,68 @@
+name: chaos
+
+# Fault injection for game days. Every experiment is recorded in the
+# Actions history, which doubles as the experiment log for postmortems.
+
+on:
+  workflow_dispatch:
+    inputs:
+      error_rate:
+        description: "Share of /api requests that fail with 503 (0 to 1)"
+        default: "0.3"
+        required: true
+      latency_ms:
+        description: "Extra latency per /api request in ms (0 = none)"
+        default: "0"
+        required: true
+      duration_minutes:
+        description: "Auto-revert after N minutes (0 = leave on until you run again with 0/0)"
+        default: "30"
+        required: true
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: chaos
+
+jobs:
+  inject:
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    steps:
+      - name: Validate inputs
+        run: |
+          awk -v r="${{ inputs.error_rate }}" 'BEGIN { exit !(r >= 0 && r <= 1) }' || { echo "error_rate must be 0..1"; exit 1; }
+          [[ "${{ inputs.latency_ms }}" =~ ^[0-9]+$ ]] || { echo "latency_ms must be an integer"; exit 1; }
+          [[ "${{ inputs.duration_minutes }}" =~ ^[0-9]+$ ]] && [ "${{ inputs.duration_minutes }}" -le 60 ] || { echo "duration_minutes must be 0..60"; exit 1; }
+
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_DEPLOYER_SA }}
+      - uses: google-github-actions/setup-gcloud@v2
+
+      - name: Inject fault
+        run: |
+          gcloud run services update gridpulse-api --region us-central1 --quiet \
+            --update-env-vars "CHAOS_ERROR_RATE=${{ inputs.error_rate }},CHAOS_LATENCY_MS=${{ inputs.latency_ms }}"
+          {
+            echo "### Chaos experiment started $(date -u +%FT%TZ)"
+            echo "- error_rate: ${{ inputs.error_rate }}"
+            echo "- latency_ms: ${{ inputs.latency_ms }}"
+            echo "- duration: ${{ inputs.duration_minutes }} min"
+            echo ""
+            echo "Expected: edge probes see failures within 1 min, fast-burn fires after ~10 min, a GitHub issue opens."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Hold
+        if: inputs.duration_minutes != '0'
+        run: sleep $(( ${{ inputs.duration_minutes }} * 60 ))
+
+      - name: Revert
+        if: always() && inputs.duration_minutes != '0'
+        run: |
+          gcloud run services update gridpulse-api --region us-central1 --quiet \
+            --update-env-vars "CHAOS_ERROR_RATE=0,CHAOS_LATENCY_MS=0"
+          echo "Reverted $(date -u +%FT%TZ)" >> "$GITHUB_STEP_SUMMARY"
